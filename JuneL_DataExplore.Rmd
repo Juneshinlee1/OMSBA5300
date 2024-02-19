@@ -51,12 +51,12 @@ list.files(file_directory)
 df <- import_list(filenames3, rbind = TRUE, fill = TRUE)
 
 
-#Aggregating the google trend data with date modification
+#Aggregating the google trend data with date modification with lubridate
 df$first_ten <- str_sub(df$monthorweek, start = 1, end = 10)
 df$month_yr <- ymd(df$first_ten)
 df$month <- floor_date(df$month_yr, unit = "month")
 
-#Data modification with group_by + mutate
+#Data modification with group_by + mutate for standardization 
 
 df <- df %>% 
   group_by(schname, keyword) %>% 
