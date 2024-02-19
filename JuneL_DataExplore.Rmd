@@ -1,0 +1,251 @@
+---
+title: "Data Exploration Project"
+author: "June L"
+date: "2024-02-18"
+format: 
+  docx:
+    echo: true
+editor: visual
+---
+
+## R Markdown
+
+**RESEARCH QUESTION:**
+
+The College Scorecard was released at the start of September 2015. Among colleges that predominantly grant bachelor's degrees, did the release of the Scorecard shift student interest to high-earnings colleges relative to low-earnings ones (as proxied by Google searches for keywords associated with those colleges)?
+
+**INTRODUCTION:**
+
+The College Scorecard is an initiative by the U.S. Department of Education with a centralized location that provides insightful data and information on colleges and universities across the United States. The initiative aimed to help prospective postsecondary students make informed enrollment decisions. As a public-facing website, the College Scorecard contains essential information about colleges, including how much graduates earn. For the interest of the analysis carried out throughout this report, College Scorecard will serve as designated as a data source layered with Google Trends data to seek the answer to the research question as to whether the release of College Scorecard influenced student interest in colleges based on their earnings potential.
+
+**DATA PREP AND STANDARDIZATION :**
+
+For this analysis, R was utilized as a scripting language to conduct all the necessary data prep steps, including data cleaning and data merging. One important call out of the Google Trend data is that it provides the popularity of a given search term in Google over time. However, provided indices that represent the relative popularity of search terms are not directly comparable between search terms as all search terms are based on different scales. An equal amount of keyword search terms does not necessarily have the same impact from one school to another. To make the indices comparable, standardization was carried out by subtracting the mean of the index and then dividing the result by the standard deviation of the index. To ensure consistency and reduce potential variability in the regression analysis, all universities with duplicate names would be excluded from the dataset.
+
+```{r}
+library(rio)
+library(lubridate)
+library(dplyr)
+library(stringr)
+library(tidyverse)
+library(fixest)
+library(vtable)
+library(lmtest)
+library(olsrr)
+
+knitr::opts_knit$set(root.dir = "C:/Users/junes/Downloads")
+
+```
+
+```{r}
+file_directory <- "../Downloads/Data_Exploration_Rawdata/Lab3_Rawdata"
+
+# Use list.files() to get a vector of filenames
+filenames3 <- list.files(path = file_directory, pattern = "trends_up_to_", full.names = TRUE)
+
+list.files(file_directory)
+
+```
+
+```{r}
+df <- import_list(filenames3, rbind = TRUE, fill = TRUE)
+
+
+#Aggregating the google trend data with date modification
+df$first_ten <- str_sub(df$monthorweek, start = 1, end = 10)
+df$month_yr <- ymd(df$first_ten)
+df$month <- floor_date(df$month_yr, unit = "month")
+
+#Data modification with group_by + mutate
+
+df <- df %>% 
+  group_by(schname, keyword) %>% 
+  mutate(standarized_index = (index - mean(index)) / sd(index))
+
+#Aggregate Keyword-month Level
+  
+keyword_month <- df %>% 
+  group_by(schname, keyword) %>% 
+  summarize(mean_stand_ind = mean(standarized_index))
+
+#Aggregate schoolname, month level
+
+schname_month <- df %>% 
+  group_by(schname, month) %>% 
+  summarize(mean_stand_ind = mean(standarized_index))
+
+#Aggregate schoolname,  level
+
+schname_month <- df %>% 
+  group_by(schname, month) %>% 
+  summarize(mean_stand_ind = mean(standarized_index))
+
+
+# Read in the Scorecard data
+scorecard_data <- import(paste0(file_directory, "/Most+Recent+Cohorts+(Scorecard+Elements).csv"))
+
+# Read in the id_name_link file
+id_name_link <- import(paste0(file_directory, "/id_name_link.csv"))
+
+#Count of school name in id_name_link to only get unique
+
+id_name_link <- id_name_link %>% 
+  group_by(schname) %>% 
+  mutate(n=n()) %>% 
+  filter(n==1)
+
+#Inner Join the data
+
+scorecard_data <- rename(scorecard_data, opeid = OPEID)
+
+
+final_data_join <- inner_join(df,id_name_link, by = 'schname')
+final_data_join <- inner_join(final_data_join,scorecard_data, by = 'opeid')
+
+# Group by schname, count distinct schid values, and filter where count of distinct schid values is greater than 1
+inconsistent_schname <- final_data_join %>%
+  group_by(schname) %>%
+  summarize(distinct_schid_count = n_distinct(schid)) %>%
+  filter(distinct_schid_count > 1)
+
+# Print rows where schname is the same while schid is different
+print(inconsistent_schname)
+
+final_data_join <- final_data_join %>%
+  group_by(schname) %>%
+  filter(n_distinct(schid) == 1) %>%
+  ungroup()
+
+vtable(final_data_join)
+sumtable(final_data_join)
+
+```
+
+**SCORECARD VARIABLES AND DATA CLASSIFICATIONS**
+
+As the center point of the research is to measure the causal effect of graduate earnings related to Google search trends, some barriers must be established to reduce confounding variables. Some variables that must be considered include location settings and college types that confound the causal relationships. As more jobs are centered in the nation's metropolitan areas, schools located in urban settings have an advantage as more national headquarters are seeking new graduates.
+
+**High-Earning and Low-Earning Classifications**
+
+To conduct this analysis effectively, categorizing income levels is crucial due to the infinite nature of income. In the determination of income status, the median earnings of students who are employed but not enrolled for 10 years after their entry will be utilized as an indicator. College Score provides median income data for graduates at 6, 8, and 10 years post-graduation. Opting for the 10-year mark acknowledges the likelihood of individuals having settled into more stable career trajectories within their respective industries, thereby mitigating income volatility often experienced by recent graduates. By using the median earnings 10-year post-graduation value, percentiles will be used to categorize the income level as high, medium, and low.
+
+*0-35% as Low Income* 36-80% as Medium Income \*81-100% as High Income
+
+The below table breaks out the 10-year post-graduate average earnings into three different categories:
+
+```{r}
+final_data_join <- final_data_join %>% 
+   mutate(year = year(month))
+
+final_data_join <- final_data_join %>%
+   mutate(`md_earn_wne_p10-REPORTED-EARNINGS` = as.numeric(`md_earn_wne_p10-REPORTED-EARNINGS`))
+
+
+income_group <- final_data_join %>% 
+  group_by(year) %>%
+  select(year, `md_earn_wne_p10-REPORTED-EARNINGS`) %>%
+  filter(!is.na(`md_earn_wne_p10-REPORTED-EARNINGS`) & 
+           `md_earn_wne_p10-REPORTED-EARNINGS` != 'PrivacySuppressed' &
+           `md_earn_wne_p10-REPORTED-EARNINGS` != 'NULL') %>% 
+  mutate(`md_earn_wne_p10-REPORTED-EARNINGS` = as.numeric(`md_earn_wne_p10-REPORTED-EARNINGS`))
+
+final_data_join <- final_data_join %>% 
+  group_by(year) %>%
+  filter(!is.na(`md_earn_wne_p10-REPORTED-EARNINGS`) & 
+           `md_earn_wne_p10-REPORTED-EARNINGS` != 'PrivacySuppressed' &
+           `md_earn_wne_p10-REPORTED-EARNINGS` != 'NULL') %>% 
+  mutate(`md_earn_wne_p10-REPORTED-EARNINGS` = as.numeric(`md_earn_wne_p10-REPORTED-EARNINGS`))
+
+income_group <- income_group %>%
+  mutate(percentile_group = case_when(
+    `md_earn_wne_p10-REPORTED-EARNINGS` <= quantile(`md_earn_wne_p10-REPORTED-EARNINGS`, 0.35) ~ "Low",
+    `md_earn_wne_p10-REPORTED-EARNINGS` > quantile(`md_earn_wne_p10-REPORTED-EARNINGS`, 0.35) & 
+      `md_earn_wne_p10-REPORTED-EARNINGS` <= quantile(`md_earn_wne_p10-REPORTED-EARNINGS`, 0.9) ~ "Mid",
+    TRUE ~ "High"
+  )) 
+
+final_data_join <- final_data_join %>%
+  mutate(percentile_group = case_when(
+    `md_earn_wne_p10-REPORTED-EARNINGS` <= quantile(`md_earn_wne_p10-REPORTED-EARNINGS`, 0.35) ~ "Low",
+    `md_earn_wne_p10-REPORTED-EARNINGS` > quantile(`md_earn_wne_p10-REPORTED-EARNINGS`, 0.35) & 
+      `md_earn_wne_p10-REPORTED-EARNINGS` <= quantile(`md_earn_wne_p10-REPORTED-EARNINGS`, 0.9) ~ "Mid",
+    TRUE ~ "High"
+  )) 
+
+income_group <- na.omit(income_group)
+final_data_join <- na.omit(final_data_join)
+
+
+income_group_range1 <- income_group %>%
+  group_by(year,percentile_group) %>%
+  summarize(min_earnings = min(`md_earn_wne_p10-REPORTED-EARNINGS`, na.rm = TRUE),
+            max_earnings = max(`md_earn_wne_p10-REPORTED-EARNINGS`, na.rm = TRUE)) 
+
+print(income_group_range1)
+```
+
+**DATA REPRESENTATION OF INCOME RANGE 10-yr post graduation**
+
+```{r}
+
+ggplot(income_group, aes(x = `md_earn_wne_p10-REPORTED-EARNINGS`, fill = percentile_group)) +
+  geom_histogram(binwidth = 5000, position = "dodge", color = "black") +
+  facet_wrap(~year, scales = "free") +
+  labs(title = "Income Distribution by Year",
+       x = "Reported Earnings",
+       y = "Frequency") +
+  scale_fill_manual(values = c("Low" = "blue", "Mid" = "green", "High" = "red")) +
+  theme_minimal()
+```
+
+**Regression Analysis**
+
+Before conducting the regression analysis to assess the causal relationship between reported earnings 10 years after graduation and the Google keyword search rate, the dataset will be streamlined to include only the necessary columns. The hypothesis is that the higher the income potential of a university, the more Google searches will result.As the College Scorecard was introduced in September 2015, a binary variable will be created to differentiate the post and pre-condition of the index. Additional control variables incorporated into the model encompass measures such as the distribution of degrees awarded by type, indicators of location characteristics, and income stratifications derived from percentile groupings established previously.
+
+```{r}
+regression_analysis <- final_data_join %>% 
+  select(month, year, standarized_index, `md_earn_wne_p10-REPORTED-EARNINGS`, LOCALE, PREDDEG, percentile_group) %>%
+  rename(income_10 = `md_earn_wne_p10-REPORTED-EARNINGS`) %>% 
+  mutate(group = ifelse(month <= "2015-09-01", "pre", "post"))
+
+  
+basic <- feols(standarized_index~income_10, data = regression_analysis)
+
+ggplot(regression_analysis, aes(x = income_10, y = standarized_index)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
+  facet_wrap(~ PREDDEG, scales = "free") +
+  geom_jitter() + 
+  labs(title = "Relationship between Income and Standardized Index",
+       x = "Income 10 Years Post Graduation",
+       y = "Standardized Index") +
+  theme_minimal()
+
+pre_post_collegescorecard <-  feols(standarized_index~income_10 * group, data = regression_analysis)
+with_controls <-feols(standarized_index ~ income_10 * group + LOCALE + PREDDEG + percentile_group, data = regression_analysis)
+
+
+etable(basic,pre_post_collegescorecard,with_controls)
+
+residuals <- residuals(with_controls)
+bptest(residuals ~ income_10 * group + LOCALE + PREDDEG + percentile_group, data = regression_analysis)
+
+```
+
+**INTERPRETATION OF REGRESSION MODEL**
+
+A total of three regression models were evaluated: \* Basic Model: Only examines the association between the median income 10 years after graduation, treated as the independent variable, and the standardized search index, designated as the dependent variable. \* pre_post_collegescorecard : Explores a distinguishing factor that delineates the causal relationship before and after the introduction of the College Scorecard initiative on September 1, 2015. \*with_controls: Added additional control terms - Predominant degree awarded, Percentile Income Group, Location Type
+
+When analyzing the outcomes of the aforementioned regression models, it becomes evident that the basic model fails to demonstrate any substantial effect on the standardized index. However, upon incorporating the interaction term distinguishing the pre and post-launch of the College Scoreboard initiative, income exhibits a notably significant negative influence on the index for the treatment group.
+
+The negative coefficient signifies that, for the College Scorecard launch, higher income is associated with lower values of the search index while keeping other variables constant. Moreover, the smaller negative coefficient of grouppre suggests that the disparity in searching was mitigated following the release of income data.
+
+The positive and significant coefficient of the income_10 \* grouppre interaction term highlights a significnat relationship, indicating a reduced negative impact of median college income data on the search index. This suggests that post-graduation income may not be the primary factor influencing students' decisions regarding college attendance.
+
+Even with the inclusion of other control variables in the model, similar patterns persist, reinforcing the notion observed in the model that included pre and post-treatment groups. Specifically, there remains a significant negative effect of income for the treatment group, moderated by the positive and significant interaction term.
+
+When considering heteroskadecity, this linear regression model appears to be reasonably well-specified and does not violate key assumptions. The Breusch-Pagan test for heteroskedasticity showed a high p-value, indicating the errors have constant variance and the homoskedasticity assumption is met.
+
+**Conclusion**
+
+The introduction of the College Scorecard increased search activity on Google Trends for colleges with high-earning graduates by 1.28 x 10\^-5 standardized index units relative to what it did for colleges with low-earning graduates, with a standard error of 1.19 \* 10 \^-5. This result comes from the negative and statistically significant coefficient estimate on the income_10 \* group variable.
